@@ -100,7 +100,10 @@ pub(crate) fn generate(args: DeriveInput) -> GeneratorResult<TokenStream> {
         }};
 
         deserialize_fields.push(quote! {
-            if field.name() == ::std::option::Option::Some(#field_name) {
+            // NOTE: temporary change for bump.sh generated curl examples
+            let field_name = field.name().map(|field_name| field_name.strip_suffix("[]").unwrap_or(field_name));
+
+            if field_name == ::std::option::Option::Some(#field_name) {
                 #field_ident = match #field_ident {
                     ::std::option::Option::Some(value) => {
                         ::std::option::Option::Some(<#field_ty as #crate_name::types::ParseFromMultipartField>::parse_from_repeated_field(value, field).await.map_err(|err| #parse_err )?)
@@ -231,6 +234,12 @@ pub(crate) fn generate(args: DeriveInput) -> GeneratorResult<TokenStream> {
                 #crate_name::registry::MetaSchemaRef::Inline(Box::new(schema))
             }
 
+            fn check_content_type(content_type: &str) -> bool {
+                let Ok(mime) = content_type.parse::<#crate_name::__private::mime::Mime>() else { return false } ;
+
+                mime.essence_str() == Self::CONTENT_TYPE
+            }
+
             fn register(registry: &mut #crate_name::registry::Registry) {
                 #(#register_fields)*
             }
@@ -282,22 +291,13 @@ pub(crate) fn generate(args: DeriveInput) -> GeneratorResult<TokenStream> {
             ) -> #crate_name::__private::poem::Result<Self> {
                 match request.content_type() {
                     ::std::option::Option::Some(content_type) => {
-                        let mime: #crate_name::__private::mime::Mime = match content_type.parse() {
-                            ::std::result::Result::Ok(mime) => mime,
-                            ::std::result::Result::Err(_) => {
-                                return ::std::result::Result::Err(::std::convert::Into::into(#crate_name::error::ContentTypeError::NotSupported {
-                                    content_type: ::std::string::ToString::to_string(&content_type),
-                                }));
-                            }
-                        };
-
-                        if mime.essence_str() != <Self as #crate_name::payload::Payload>::CONTENT_TYPE {
-                            return ::std::result::Result::Err(::std::convert::Into::into(#crate_name::error::ContentTypeError::NotSupported {
-                                content_type: ::std::string::ToString::to_string(&content_type),
-                            }));
+                        if <Self as #crate_name::payload::Payload>::check_content_type(content_type) {
+                            return <Self as #crate_name::payload::ParsePayload>::from_request(request, body).await;
                         }
 
-                        <Self as #crate_name::payload::ParsePayload>::from_request(request, body).await
+                        ::std::result::Result::Err(::std::convert::Into::into(#crate_name::error::ContentTypeError::NotSupported {
+                            content_type: ::std::string::ToString::to_string(&content_type),
+                        }))
                     }
                     ::std::option::Option::None => ::std::result::Result::Err(::std::convert::Into::into(#crate_name::error::ContentTypeError::ExpectContentType)),
                 }
